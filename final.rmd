@@ -233,6 +233,9 @@ plotMDS(vGene$E, labels = dataf$Treatment , col = levels(treat))
 ```{r}
 plotMDS(vGene$E, labels = dataf$Cell_type , col = levels(cellt))
 ```
+
+
+
 ## Conclusion
 
 As can be observed in the heatmap, most cell lines retained similar gene expression patterns even with different treatments and clustered together. The only group that clustered in an unexpected way was that of normal cells with both treatments, showing a more similar expression pattern to asthma cells than to control and single-treated normal cells. Other than that, the results suggest that no treatment affected any cell line enough for it to deviate from the control group significantly, as they grouped preferentiallly by cell type and not by treatment. The last two plots confirm this variable response, since no grouping is observed. The immortalized cell line is more affected by calcitriol than by Poly I:C, and normal cells are more affected by a combined treatment.
