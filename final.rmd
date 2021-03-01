@@ -3,30 +3,241 @@ title: "final_project"
 author: "lau-lhg"
 date: "2/25/2021"
 output:
-    rmarkdown::html_document:
-    theme: lumen
+    html_document:
+    df_print: paged
+    code_folding: show
+    self_contained: yes
+    theme: yeti
+    highlight: haddock
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE) 
 ```
 
-## R Markdown
+Instructions: Perform a simple differential expression analysis using an existing study in recount. Include at least 3 graphs.
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+## Getting Started
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+We can obtain data from recount3.
+```{r}
+#import libraries
+library("recount3")
+library("edgeR")
+#save available projects
+human_projects <- available_projects()
 ```
 
-## Including Plots
 
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r}
+#get chosen project
+rse <- create_rse(
+    subset(
+        human_projects,
+        project == "SRP124965" & project_type == "data_sources"
+    )
+)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+**Chosen Study Abstract**: Vitamin D has been associated with viral respiratory infections, the main cause of severe asthma exacerbations in children. We used ATAC-Seq to evaluate the effect of vitamin D on chromatin accessibility in immortalized (BEAS-2B), normal (NHBEC), and asthma (AAEC) bronchial epithelial cells cultured and stimulated with calcitriol, poly I:C (to simulate viral infection), both, or sham (culture media), as well as the effect on gene expression. Overall design: ATAC-Seq and total RNA-Seq were performed on 4 asthma human bronchial epithelial cell samples (AAEC), 4 normal human bronchial epithelial cell samples (NHBEC) and 4 immortalized (BEAS-2B) samples, respectively treated with calcitriol, poly I:C, both or sham (culture media).
+
+We can explore the information in our project.
+```{r}
+rse
+```
+
+```{r}
+#change into sample num, counts
+assay(rse, "counts") <- compute_read_counts(rse)
+```
+
+## Initial Exploration and Filters
+
+```{r}
+#check that the info within attributes follows the same pattern, since it does we can use expand
+rse$sra.sample_attributes[1:5]
+```
+
+```{r}
+#expand attributes for easier access
+rse <- expand_sra_attributes(rse)
+#verify
+colData(rse)[, grepl("^sra_attribute", colnames(colData(rse))) ]
+```
+
+```{r}
+#create gene prop column
+rse$assigned_gene_prop <- rse$recount_qc.gene_fc_count_all.assigned/rse$recount_qc.gene_fc_count_all.total
+#let's look at it in an histogram
+hist(rse$assigned_gene_prop, main='Assigned Gene Proportion Histogram', ylab='assigned gene proportion')
+#use summary
+summary(rse$assigned_gene_prop)
+```
+
+
+
+```{r}
+# save an 'original' version
+rse_unfiltered<-rse
+#get rid of first quartil
+rse <- rse[, rse$assigned_gene_prop > 0.4155]
+```
+
+Let's start thinking about the experimental design.
+```{r}
+#we're interested in the following variables
+table(rse$sra_attribute.cell_type)
+table(rse$sra_attribute.treatment)
+```
+
+Let's look at sample variation according to different categories.
+
+```{r}
+with(colData(rse), tapply(assigned_gene_prop, sra_attribute.treatment, summary))
+```
+```{r}
+with(colData(rse), tapply(assigned_gene_prop, sra_attribute.cell_type, summary))
+```
+Knowing how mean gene expression behaves is important when determining useful data.
+```{r}
+gene_means <- rowMeans(assay(rse, "counts"))
+summary(gene_means)
+```
+
+```{r}
+#we also remove those with means under the first quartile
+rse<-rse[gene_means > 0, ]
+(dim(rse)/dim(rse_unfiltered))[1]*100
+```
+
+## Normalization
+Before being able to conclude anything regarding differential expression, data must be normalized to prevent inherent bias.
+```{r}
+#normalize
+norm <- DGEList( counts = assay(rse, "counts"),genes = rowData(rse))
+norm <- calcNormFactors(norm)
+```
+
+As a final change we'll rename some categories and add them as a new column for easier access and interpretation.
+```{r}
+rse$treatment<-rse$sra_attribute.treatment
+rse$cell_type<-rse$sra_attribute.cell_type
+```
+
+
+
+## Differential Expression
+```{r}
+#import
+library("ggplot2")
+#plot in boxplot
+ggplot(as.data.frame(colData(rse)), aes(y = assigned_gene_prop, x = sra_attribute.treatment)) +
+    geom_boxplot() +
+    theme_bw(base_size = 20) +
+    ylab("Assigned Gene Prop") +
+    xlab("Treatment")
+```
+
+```{r}
+ggplot(as.data.frame(colData(rse)), aes(y = assigned_gene_prop, x = sra_attribute.cell_type)) +
+    geom_boxplot() +
+    theme_bw(base_size = 20) +
+    ylab("Assigned Gene Prop") +
+    xlab("Cell type")
+```
+```{r}
+#model
+model <- model.matrix(~ treatment + cell_type + assigned_gene_prop, data = colData(rse) )
+colnames(model)
+```
+
+```{r}
+library("limma")
+vGene <- voom(norm, model, plot = TRUE)
+```
+
+```{r}
+eb_results <- eBayes(lmFit(vGene))
+
+de_results <- topTable(
+    eb_results,
+    coef = 2,
+    number = nrow(rse),
+    sort.by = "none"
+)
+dim(de_results)
+```
+```{r}
+head(de_results)
+```
+
+
+```{r}
+table(de_results$adj.P.Val < 0.05)
+```
+
+```{r}
+plotMA(eb_results, coef = 2)
+```
+
+```{r}
+volcanoplot(eb_results, coef = 2, highlight = 3, names = de_results$gene_name)
+```
+ 
+```{r} 
+highlighted<-c('RNU1-1','SNORA73B', 'SNHG3')
+de_results[de_results$gene_name %in% highlighted, ]
+```
+
+```{r}
+# Use genes with most significant expr changes
+exprs_heatmap <- vGene$E[rank(de_results$adj.P.Val) <= 50, ]
+
+# create data frame
+dataf <- as.data.frame(colData(rse)[, c("treatment", "cell_type", "assigned_gene_prop")])
+colnames(dataf) <- c("Treatment", "Cell_type", "Gene_prop")
+
+## pheatmap
+library("pheatmap")
+pheatmap(
+    exprs_heatmap,
+    cluster_rows = TRUE,
+    cluster_cols = TRUE,
+    show_rownames = FALSE,
+    show_colnames = FALSE,
+    cex = 0.9,
+    annotation_col = dataf
+)
+```
+
+```{r}
+# color is pretty
+library("RColorBrewer")
+
+treat <- dataf$Treatment
+levels(treat) <- brewer.pal(nlevels(treat), "Set1")
+
+cellt <- dataf$Cell_type
+levels(cellt) <- brewer.pal(nlevels(cellt), "Dark2")
+```
+ 
+  
+
+```{r}
+plotMDS(vGene$E, labels = dataf$Treatment , col = levels(treat))
+```
+
+```{r}
+plotMDS(vGene$E, labels = dataf$Cell_type , col = levels(cellt))
+```
+## Conclusion
+
+As can be observed in the heatmap, most cell lines retained similar gene expression patterns even with different treatments and clustered together. The only group that clustered in an unexpected way was that of normal cells with both treatments, showing a more similar expression pattern to asthma cells than to control and single-treated normal cells. Other than that, the results suggest that no treatment affected any cell line enough for it to deviate from the control group significantly, as they grouped preferentiallly by cell type and not by treatment. The last two plots confirm this variable response, since no grouping is observed. The immortalized cell line is more affected by calcitriol than by Poly I:C, and normal cells are more affected by a combined treatment.
+
+Despite what was previously described, it's importamt to keep in mind that the small data size may prompt inadequate conclusions. Perhaps a comparison of only the genes involved in the target pathway could yield clearer, gene-specific observations.
+
+
+
